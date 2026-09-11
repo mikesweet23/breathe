@@ -68,6 +68,8 @@
     expandedDay: null,
     openPhases: { FOUNDATIONS: true, STAMINA: false, "CONTROL MASTERY": false },
     draftPreset: null,
+    todayExtra: 0,
+    todayTune: null,
     session: null,
   };
 
@@ -167,7 +169,7 @@
     stopTimer();
     const session = state.session;
     if (!session || session.done) return;
-    const hold = P.sessionHoldSeconds(session.day);
+    const hold = P.phasesHoldSeconds(session.phases);
     state.core = P.applySessionComplete(state.core, { day: session.day.day, holdSeconds: hold });
     session.done = true;
     session.holdSeconds = hold;
@@ -192,6 +194,14 @@
       if (!state.session || state.session.paused || state.session.done) return;
       const elapsed = (now - phaseStarted) / 1000;
       session.remaining = Math.max(0, phase.duration - elapsed);
+      const whole = Math.ceil(session.remaining);
+      if (whole !== session.lastTickSec) {
+        session.lastTickSec = whole;
+        if (whole <= 3 && whole >= 1 && session.remaining > 0.05) {
+          beep(980, 0.07);
+          haptic(10);
+        }
+      }
       updateSessionLive();
       if (session.remaining <= 0.02) {
         if (session.index >= session.phases.length - 1) {
@@ -235,10 +245,45 @@
     session.prepTimer = setTimeout(step, 900);
   };
 
-  const startSession = (dayPlan) => {
-    const phases = P.buildPhases(dayPlan);
+  const cloneDay = (dayPlan, extraRounds = 0, tune = null) => {
+    const day = {
+      ...dayPlan,
+      exercises: dayPlan.exercises.map((exercise) => ({ ...exercise })),
+    };
+    if (extraRounds > 0) {
+      day.exercises = day.exercises.map((exercise) => ({
+        ...exercise,
+        reps: exercise.reps + extraRounds,
+      }));
+    }
+    if (tune) {
+      day.exercises = day.exercises.map((exercise) => {
+        const next = { ...exercise };
+        if (exercise.type === "quick-flick") {
+          next.rest = tune.rest;
+        } else if (exercise.type === "reverse") {
+          next.hold = tune.hold;
+          next.rest = tune.rest;
+        } else if (exercise.type === "alternating") {
+          next.hold = tune.hold;
+          next.rest = tune.rest;
+          next.reverseHold = tune.hold;
+        } else {
+          next.hold = tune.hold;
+          next.rest = tune.rest;
+        }
+        return next;
+      });
+    }
+    return day;
+  };
+
+  const startSession = (dayPlan, { extraRounds = 0, tune = null } = {}) => {
+    const day = cloneDay(dayPlan, extraRounds, tune);
+    const phases = P.buildPhases(day);
     state.session = {
-      day: dayPlan,
+      day,
+      baseDay: dayPlan,
       phases,
       index: 0,
       remaining: phases[0]?.duration || 0,
@@ -250,10 +295,99 @@
       startedAt: Date.now(),
       felt: null,
       prepTimer: null,
+      tuneOpen: false,
+      tuneHold: tune?.hold ?? P.recommendedValue(dayPlan, "longHold"),
+      tuneRest: tune?.rest ?? P.recommendedValue(dayPlan, "rest"),
+      extraRounds,
+      lastTickSec: null,
     };
+    if (typeof state.session.tuneHold !== "number") state.session.tuneHold = 6;
+    if (typeof state.session.tuneRest !== "number") state.session.tuneRest = 3;
     lockScreen(true);
     startPrepare();
     render();
+  };
+
+  const addRoundLive = () => {
+    const session = state.session;
+    if (!session || session.done || session.preparing) return;
+    const current = session.phases[session.index];
+    if (!current) return;
+    const exerciseIdx = current.exerciseIdx;
+    const exercise = session.day.exercises[exerciseIdx];
+    if (!exercise) return;
+    const maxRep = session.phases.reduce(
+      (max, phase) => (phase.exerciseIdx === exerciseIdx ? Math.max(max, phase.rep) : max),
+      0
+    );
+    const extra = P.exerciseRepPhases(exercise, exerciseIdx, maxRep + 1);
+    let insertAt = session.phases.length;
+    for (let idx = session.phases.length - 1; idx > session.index; idx -= 1) {
+      if (session.phases[idx].exerciseIdx === exerciseIdx) {
+        insertAt = idx + 1;
+        break;
+      }
+    }
+    session.phases.splice(insertAt, 0, ...extra);
+    exercise.reps = maxRep + 1;
+    session.extraRounds = (session.extraRounds || 0) + 1;
+    beep(920, 0.12);
+    haptic([16, 24, 40]);
+    toast(`Round added — ${exercise.name} × ${exercise.reps}`);
+    renderSession();
+  };
+
+  const resetPhase = () => {
+    const session = state.session;
+    if (!session || session.done || session.preparing) return;
+    const phase = session.phases[session.index];
+    if (!phase) return;
+    session.remaining = phase.duration;
+    session.lastTickSec = null;
+    session.paused = false;
+    beep(660, 0.1);
+    haptic(20);
+    startPhaseTimer();
+    renderSession();
+  };
+
+  const nudgeCurrent = (delta) => {
+    const session = state.session;
+    if (!session || session.done || session.preparing) return;
+    const phase = session.phases[session.index];
+    if (!phase) return;
+    session.remaining = Math.min(
+      Math.max(0.5, session.remaining + delta),
+      phase.duration + 30
+    );
+    if (session.remaining > phase.duration) phase.duration = session.remaining;
+    session.paused = false;
+    haptic(14);
+    startPhaseTimer();
+    renderSession();
+  };
+
+  const applyTune = (holdSec, restSec) => {
+    const session = state.session;
+    if (!session || session.done) return;
+    session.tuneHold = holdSec;
+    session.tuneRest = restSec;
+    for (let idx = session.index + 1; idx < session.phases.length; idx += 1) {
+      const phase = session.phases[idx];
+      phase.duration = P.isHoldPhase(phase) ? holdSec : restSec;
+    }
+    const current = session.phases[session.index];
+    if (current && !session.preparing) {
+      const target = P.isHoldPhase(current) ? holdSec : restSec;
+      current.duration = target;
+      session.remaining = target;
+      session.lastTickSec = null;
+      session.paused = false;
+      startPhaseTimer();
+    }
+    beep(760, 0.1);
+    toast(`Timers set — hold ${holdSec}s · rest ${restSec}s`);
+    renderSession();
   };
 
   const endSessionEarly = () => {
@@ -398,13 +532,16 @@
       state.core.lastDate && P.daysBetween(state.core.lastDate, P.todayISO()) > 1 && !doneToday;
     const tip = P.TIPS[(day.day - 1) % P.TIPS.length];
     const allDone = state.core.completedDays.length >= 42;
+    const recHold = Number(P.recommendedValue(baseProgram[dayNum - 1], "longHold")) || 6;
+    const recRest = Number(P.recommendedValue(baseProgram[dayNum - 1], "rest")) || 3;
+    if (!state.todayTune) state.todayTune = { hold: recHold, rest: recRest };
 
     return `
       <section class="view wrap stack">
         <div class="hero-row">
           <div>
             <p class="kicker">${escapeHtml(P.greeting())}</p>
-            <h1 class="hero-title serif">${allDone ? "Program complete" : doneToday ? "You're done for today" : missed ? "Welcome back" : "Today's session"}</h1>
+            <h1 class="hero-title serif">${allDone ? "Program complete" : doneToday ? "You're done <span class='glow-word'>for today</span>" : missed ? "Welcome <span class='glow-word'>back</span>" : "Today's <span class='glow-word'>session</span>"}</h1>
           </div>
           <div class="ring" style="--p:${pct}"><span>${pct}%</span></div>
         </div>
@@ -434,6 +571,45 @@
               </div>`
               )
               .join("")}
+          </div>
+          <div class="tune">
+            <div class="tune-head">
+              <p class="kicker">This session</p>
+              <span class="faint">${state.todayExtra ? `+${state.todayExtra} round${state.todayExtra > 1 ? "s" : ""}` : "Standard"} · hold ${state.todayTune.hold}s · rest ${state.todayTune.rest}s</span>
+            </div>
+            <div class="slider-row">
+              <div class="row-between">
+                <div><p>Hold seconds</p><p class="faint">Lifts & releases this time only</p></div>
+                <output>${state.todayTune.hold}s</output>
+              </div>
+              <div class="stepper">
+                <button data-today-nudge="hold" data-dir="-1" aria-label="Less hold">−</button>
+                <input type="range" min="3" max="15" step="1" value="${state.todayTune.hold}" data-today-slide="hold" aria-label="Hold seconds">
+                <button data-today-nudge="hold" data-dir="1" aria-label="More hold">+</button>
+              </div>
+            </div>
+            <div class="slider-row">
+              <div class="row-between">
+                <div><p>Rest seconds</p><p class="faint">Breathers between reps</p></div>
+                <output>${state.todayTune.rest}s</output>
+              </div>
+              <div class="stepper">
+                <button data-today-nudge="rest" data-dir="-1" aria-label="Less rest">−</button>
+                <input type="range" min="2" max="10" step="1" value="${state.todayTune.rest}" data-today-slide="rest" aria-label="Rest seconds">
+                <button data-today-nudge="rest" data-dir="1" aria-label="More rest">+</button>
+              </div>
+            </div>
+            <div class="slider-row">
+              <div class="row-between">
+                <div><p>Extra rounds</p><p class="faint">+1 rep on every exercise</p></div>
+                <output>${state.todayExtra}</output>
+              </div>
+              <div class="stepper">
+                <button data-extra="-1" aria-label="Fewer rounds">−</button>
+                <input type="range" min="0" max="3" step="1" value="${state.todayExtra}" data-extra-slide aria-label="Extra rounds">
+                <button data-extra="1" aria-label="More rounds">+</button>
+              </div>
+            </div>
           </div>
           <button class="btn btn-primary" data-start="${day.day}">${completed ? "Repeat session" : "Start session"}</button>
         </article>
@@ -753,7 +929,7 @@
         <div class="session-main">
           <div class="orb-wrap"><div class="orb"></div></div>
           <h2 class="serif" style="font-size:32px">Nice work</h2>
-          <p class="muted">${session.holdSeconds}s of hold · ${session.day.exercises.length} exercises · streak ${state.core.streak}d</p>
+          <p class="muted">${session.holdSeconds}s of hold · ${session.day.exercises.length} exercises${session.extraRounds ? ` · +${session.extraRounds} round${session.extraRounds > 1 ? "s" : ""}` : ""} · streak ${state.core.streak}d</p>
           <div style="width:min(420px,100%)">
             <p class="kicker" style="margin-bottom:8px">How did that feel?</p>
             <div class="feel">
@@ -772,7 +948,7 @@
         <div class="session-top">
           <div>
             <p class="kicker">${escapeHtml(exercise?.name || "Session")}</p>
-            <p>Rep ${phase.rep} / ${exercise?.reps || 1} · Day ${session.day.day}</p>
+            <p>Rep ${phase.rep} / ${exercise?.reps || 1} · Day ${session.day.day}${session.extraRounds ? ` · +${session.extraRounds}` : ""}</p>
           </div>
           <div class="top-actions">
             <button class="icon-btn ${state.settings.soundOn ? "chip" : ""}" data-toggle="soundOn" aria-label="Sound">♫</button>
@@ -782,19 +958,63 @@
         <div class="session-main">
           <p class="muted">${preparing ? "Get settled" : `Exercise ${phase.exerciseIdx + 1} of ${session.day.exercises.length}`}</p>
           <p class="phase-label">${preparing ? "STARTING" : escapeHtml(phase.label)}</p>
-          <div class="orb-wrap">
+          <div class="orb-wrap" data-orb title="${session.paused ? "Tap to resume" : "Tap to pause"}" role="button" aria-label="${session.paused ? "Resume" : "Pause"}">
+            <div class="orb-halo"></div>
             <div class="orb-ring" style="--p:${Math.round((preparing ? (4 - session.preparing) / 3 : progress) * 100)}"></div>
             <div class="orb"></div>
           </div>
           <div class="count" data-count>${preparing ? session.preparing : Math.ceil(session.remaining)}</div>
           <p class="muted">${preparing ? "Breathe. Soften the jaw." : sessionCue(phase.type)}</p>
-          <p class="faint">${session.paused ? "Paused" : P.formatClock(left) + " left"}</p>
+          ${session.paused && !preparing ? `<div class="pause-banner" style="width:min(420px,100%)">PAUSED — TAP ORB OR RESUME</div>` : ""}
+          <p class="faint">${session.paused ? "Paused · " + P.formatClock(left) + " left" : P.formatClock(left) + " left · phase " + (session.index + 1) + " of " + session.phases.length}</p>
+          <div class="ex-dots" aria-hidden="true">
+            ${session.day.exercises.map((ex, idx) => {
+              const done = idx < phase.exerciseIdx;
+              const now = idx === phase.exerciseIdx;
+              return `<i class="${done ? "done" : ""} ${now ? "now" : ""}"></i>`;
+            }).join("")}
+          </div>
         </div>
         <div class="session-foot">
           <div class="bar"><i style="width:${((session.index + (preparing ? 0 : progress)) / session.phases.length) * 100}%"></i></div>
           <div class="btn-row">
-            <button class="btn btn-ghost" data-pause ${preparing ? "disabled" : ""}>${session.paused ? "Resume" : "Pause"}</button>
-            <button class="btn btn-ghost" data-skip ${preparing ? "disabled" : ""}>Skip exercise</button>
+            <button class="btn ${session.paused ? "btn-primary" : "btn-ghost"}" data-pause ${preparing ? "disabled" : ""}>${session.paused ? "▶ Resume" : "⏸ Pause"}</button>
+            <button class="btn btn-ghost" data-round ${preparing ? "disabled" : ""}>＋ Round</button>
+          </div>
+          <div class="quick-row">
+            <button data-nudge="-5" ${preparing ? "disabled" : ""}>−5s</button>
+            <button data-reset-phase ${preparing ? "disabled" : ""}>↻ Reset phase</button>
+            <button data-nudge="5" ${preparing ? "disabled" : ""}>+5s</button>
+            <button data-tune-toggle>${session.tuneOpen ? "Hide timers" : "Timers"}</button>
+          </div>
+          ${session.tuneOpen ? `
+          <div class="tune-panel">
+            <div class="slider-row">
+              <div class="row-between">
+                <div><p>Hold</p><p class="faint">Lifts, holds & releases</p></div>
+                <output>${session.tuneHold}s</output>
+              </div>
+              <div class="stepper">
+                <button data-tune-nudge="hold" data-dir="-1" aria-label="Less hold">−</button>
+                <input type="range" min="3" max="15" step="1" value="${session.tuneHold}" data-tune-slide="hold" aria-label="Hold seconds">
+                <button data-tune-nudge="hold" data-dir="1" aria-label="More hold">+</button>
+              </div>
+            </div>
+            <div class="slider-row">
+              <div class="row-between">
+                <div><p>Rest</p><p class="faint">Breathers between reps</p></div>
+                <output>${session.tuneRest}s</output>
+              </div>
+              <div class="stepper">
+                <button data-tune-nudge="rest" data-dir="-1" aria-label="Less rest">−</button>
+                <input type="range" min="2" max="10" step="1" value="${session.tuneRest}" data-tune-slide="rest" aria-label="Rest seconds">
+                <button data-tune-nudge="rest" data-dir="1" aria-label="More rest">+</button>
+              </div>
+            </div>
+            <p class="faint">Sliders reset this phase and retime everything after it. Space = pause · R = reset · N = round.</p>
+          </div>` : ""}
+          <div class="btn-row">
+            <button class="btn btn-ghost" data-skip ${preparing ? "disabled" : ""}>Skip exercise →</button>
           </div>
         </div>
       </section>`;
@@ -826,6 +1046,43 @@
     root.querySelector("[data-end-session]")?.addEventListener("click", endSessionEarly);
     root.querySelector("[data-pause]")?.addEventListener("click", togglePause);
     root.querySelector("[data-skip]")?.addEventListener("click", skipExercise);
+    root.querySelector("[data-round]")?.addEventListener("click", addRoundLive);
+    root.querySelector("[data-reset-phase]")?.addEventListener("click", resetPhase);
+    root.querySelector("[data-orb]")?.addEventListener("click", () => {
+      if (!state.session?.preparing) togglePause();
+    });
+    root.querySelectorAll("[data-nudge]").forEach((button) => {
+      button.addEventListener("click", () => nudgeCurrent(Number(button.dataset.nudge)));
+    });
+    root.querySelector("[data-tune-toggle]")?.addEventListener("click", () => {
+      if (state.session) state.session.tuneOpen = !state.session.tuneOpen;
+      renderSession();
+    });
+    const tuneDraft = { hold: state.session?.tuneHold, rest: state.session?.tuneRest };
+    root.querySelectorAll("[data-tune-slide]").forEach((input) => {
+      input.addEventListener("change", () => {
+        tuneDraft[input.dataset.tuneSlide] = Number(input.value);
+        applyTune(
+          input.dataset.tuneSlide === "hold" ? Number(input.value) : tuneDraft.hold,
+          input.dataset.tuneSlide === "rest" ? Number(input.value) : tuneDraft.rest
+        );
+      });
+    });
+    root.querySelectorAll("[data-tune-nudge]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const key = button.dataset.tuneNudge;
+        const dir = Number(button.dataset.dir);
+        const hold = key === "hold"
+          ? P.clamp((tuneDraft.hold ?? state.session.tuneHold) + dir, 3, 15)
+          : (tuneDraft.hold ?? state.session.tuneHold);
+        const rest = key === "rest"
+          ? P.clamp((tuneDraft.rest ?? state.session.tuneRest) + dir, 2, 10)
+          : (tuneDraft.rest ?? state.session.tuneRest);
+        tuneDraft.hold = hold;
+        tuneDraft.rest = rest;
+        applyTune(hold, rest);
+      });
+    });
     root.querySelectorAll("[data-felt]").forEach((button) => {
       button.addEventListener("click", () => rateSession(button.dataset.felt));
     });
@@ -936,8 +1193,37 @@
     root.querySelectorAll("[data-start]").forEach((button) => {
       button.addEventListener("click", () => {
         const day = program()[Number(button.dataset.start) - 1];
-        startSession(day);
+        startSession(day, { extraRounds: state.todayExtra || 0, tune: state.todayTune });
+        state.todayExtra = 0;
       });
+    });
+    root.querySelectorAll("[data-today-slide]").forEach((input) => {
+      input.addEventListener("change", () => {
+        const key = input.dataset.todaySlide;
+        state.todayTune = state.todayTune || { hold: 6, rest: 3 };
+        state.todayTune[key] = Number(input.value);
+        render();
+      });
+    });
+    root.querySelectorAll("[data-today-nudge]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const key = button.dataset.todayNudge;
+        const dir = Number(button.dataset.dir);
+        state.todayTune = state.todayTune || { hold: 6, rest: 3 };
+        const limits = key === "hold" ? [3, 15] : [2, 10];
+        state.todayTune[key] = P.clamp(state.todayTune[key] + dir, limits[0], limits[1]);
+        render();
+      });
+    });
+    root.querySelectorAll("[data-extra]").forEach((button) => {
+      button.addEventListener("click", () => {
+        state.todayExtra = P.clamp((state.todayExtra || 0) + Number(button.dataset.extra), 0, 3);
+        render();
+      });
+    });
+    root.querySelector("[data-extra-slide]")?.addEventListener("change", (event) => {
+      state.todayExtra = P.clamp(Number(event.target.value) || 0, 0, 3);
+      render();
     });
     root.querySelectorAll("[data-expand]").forEach((button) => {
       button.addEventListener("click", () => {
@@ -1029,8 +1315,29 @@
   });
 
   document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "visible" && state.session && !state.session.done) {
+    if (!state.session || state.session.done || state.session.preparing) return;
+    if (document.visibilityState === "hidden" && !state.session.paused) {
+      state.session.paused = true;
+      stopTimer();
+      toast("Paused — tap resume when you're back");
+      renderSession();
+    } else if (document.visibilityState === "visible") {
       lockScreen(true);
+    }
+  });
+
+  document.addEventListener("keydown", (event) => {
+    if (!state.session || state.session.done || state.session.preparing) return;
+    if (event.target && /^(INPUT|TEXTAREA|SELECT)$/.test(event.target.tagName)) return;
+    if (event.code === "Space") {
+      event.preventDefault();
+      togglePause();
+    } else if (event.key === "n" || event.key === "N") {
+      addRoundLive();
+    } else if (event.key === "r" || event.key === "R") {
+      resetPhase();
+    } else if (event.key === "ArrowRight") {
+      skipExercise();
     }
   });
 
