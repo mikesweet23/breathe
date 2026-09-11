@@ -59,4 +59,25 @@ assert.strictEqual(P.daysBetween("2026-08-16", "2026-08-18"), 2);
 assert.ok(P.greeting(new Date("2026-08-16T08:00:00")).includes("morning"));
 assert.strictEqual(P.weeklyStats([1, 2, 8])[0].done, 2);
 
+// Extra-round + timer helpers
+const dayOne = program[0];
+const repPhases = P.exerciseRepPhases(dayOne.exercises[0], 0, 99);
+assert.ok(repPhases.length >= 2, "single-rep phases");
+assert.ok(repPhases.every((phase) => phase.rep === 99 && phase.exerciseIdx === 0));
+const rebuilt = [];
+dayOne.exercises.forEach((exercise, idx) => {
+  for (let rep = 1; rep <= exercise.reps; rep += 1) rebuilt.push(...P.exerciseRepPhases(exercise, idx, rep));
+});
+assert.deepStrictEqual(rebuilt, P.buildPhases(dayOne), "buildPhases matches per-rep builder");
+const withExtra = [...phases, ...P.exerciseRepPhases(dayOne.exercises[0], 0, 999)];
+assert.strictEqual(
+  P.phasesHoldSeconds(withExtra),
+  P.phasesHoldSeconds(phases) + P.phasesHoldSeconds(P.exerciseRepPhases(dayOne.exercises[0], 0, 999)),
+  "extra round adds hold time"
+);
+assert.ok(P.isHoldPhase({ type: "kegel" }) && P.isHoldPhase({ type: "elevator" }));
+assert.ok(!P.isHoldPhase({ type: "rest" }));
+assert.strictEqual(P.phaseHoldSeconds({ type: "rest", duration: 5 }), 0);
+assert.strictEqual(P.phaseHoldSeconds({ type: "kegel", duration: 5 }), 5);
+
 console.log("All program tests passed");

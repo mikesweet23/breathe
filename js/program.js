@@ -372,41 +372,75 @@ function applyPreset(program, preset, enabled) {
   });
 }
 
+function exerciseRepPhases(exercise, exerciseIdx, rep) {
+  const base = { exerciseIdx, exerciseId: exercise.id, rep };
+  if (exercise.type === "quick-flick") {
+    return [
+      { label: "LIFT", duration: exercise.hold, type: "kegel", ...base },
+      { label: "RELEASE", duration: exercise.rest, type: "rest", ...base },
+    ];
+  }
+  if (exercise.type === "long-hold") {
+    return [
+      { label: "LIFT • HOLD", duration: exercise.hold, type: "kegel", ...base },
+      { label: "RELEASE", duration: exercise.rest, type: "rest", ...base },
+    ];
+  }
+  if (exercise.type === "endurance") {
+    return [
+      { label: "HOLD", duration: exercise.hold, type: "kegel", ...base },
+      { label: "BREATHE", duration: exercise.rest, type: "rest", ...base },
+    ];
+  }
+  if (exercise.type === "reverse") {
+    return [
+      { label: "INHALE • RELEASE", duration: exercise.hold, type: "reverse", ...base },
+      { label: "EXHALE", duration: exercise.rest, type: "rest", ...base },
+    ];
+  }
+  if (exercise.type === "elevator") {
+    return [
+      { label: "LEVEL 1", duration: exercise.hold, type: "elevator", step: 1, ...base },
+      { label: "LEVEL 2", duration: exercise.hold, type: "elevator", step: 2, ...base },
+      { label: "LEVEL 3", duration: exercise.hold, type: "elevator", step: 3, ...base },
+      { label: "DROP", duration: exercise.rest, type: "rest", ...base },
+    ];
+  }
+  if (exercise.type === "alternating") {
+    return [
+      { label: "EXHALE • LIFT", duration: exercise.hold, type: "kegel", ...base },
+      {
+        label: "INHALE • RELEASE",
+        duration: exercise.reverseHold || 5,
+        type: "reverse",
+        ...base,
+      },
+      { label: "REST", duration: exercise.rest, type: "rest", ...base },
+    ];
+  }
+  return [];
+}
+
 function buildPhases(dayPlan) {
   const phases = [];
   dayPlan.exercises.forEach((exercise, exerciseIdx) => {
     for (let rep = 1; rep <= exercise.reps; rep += 1) {
-      const base = { exerciseIdx, exerciseId: exercise.id, rep };
-      if (exercise.type === "quick-flick") {
-        phases.push({ label: "LIFT", duration: exercise.hold, type: "kegel", ...base });
-        phases.push({ label: "RELEASE", duration: exercise.rest, type: "rest", ...base });
-      } else if (exercise.type === "long-hold") {
-        phases.push({ label: "LIFT • HOLD", duration: exercise.hold, type: "kegel", ...base });
-        phases.push({ label: "RELEASE", duration: exercise.rest, type: "rest", ...base });
-      } else if (exercise.type === "endurance") {
-        phases.push({ label: "HOLD", duration: exercise.hold, type: "kegel", ...base });
-        phases.push({ label: "BREATHE", duration: exercise.rest, type: "rest", ...base });
-      } else if (exercise.type === "reverse") {
-        phases.push({ label: "INHALE • RELEASE", duration: exercise.hold, type: "reverse", ...base });
-        phases.push({ label: "EXHALE", duration: exercise.rest, type: "rest", ...base });
-      } else if (exercise.type === "elevator") {
-        phases.push({ label: "LEVEL 1", duration: exercise.hold, type: "elevator", step: 1, ...base });
-        phases.push({ label: "LEVEL 2", duration: exercise.hold, type: "elevator", step: 2, ...base });
-        phases.push({ label: "LEVEL 3", duration: exercise.hold, type: "elevator", step: 3, ...base });
-        phases.push({ label: "DROP", duration: exercise.rest, type: "rest", ...base });
-      } else if (exercise.type === "alternating") {
-        phases.push({ label: "EXHALE • LIFT", duration: exercise.hold, type: "kegel", ...base });
-        phases.push({
-          label: "INHALE • RELEASE",
-          duration: exercise.reverseHold || 5,
-          type: "reverse",
-          ...base,
-        });
-        phases.push({ label: "REST", duration: exercise.rest, type: "rest", ...base });
-      }
+      phases.push(...exerciseRepPhases(exercise, exerciseIdx, rep));
     }
   });
   return phases;
+}
+
+function isHoldPhase(phase) {
+  return phase.type === "kegel" || phase.type === "reverse" || phase.type === "elevator";
+}
+
+function phaseHoldSeconds(phase) {
+  return isHoldPhase(phase) ? phase.duration : 0;
+}
+
+function phasesHoldSeconds(phases) {
+  return phases.reduce((sum, phase) => sum + phaseHoldSeconds(phase), 0);
 }
 
 function nextProgramDay(completedDays) {
@@ -515,6 +549,10 @@ const api = {
   buildProgram,
   applyPreset,
   buildPhases,
+  exerciseRepPhases,
+  isHoldPhase,
+  phaseHoldSeconds,
+  phasesHoldSeconds,
   nextProgramDay,
   todayISO,
   daysBetween,
