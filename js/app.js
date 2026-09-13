@@ -390,13 +390,14 @@
     renderSession();
   };
 
-  const endSessionEarly = () => {
+  const leaveSession = () => {
     if (!state.session) return;
     if (!state.session.done && !confirm("End session? This day will not be marked complete.")) return;
     clearTimeout(state.session.prepTimer);
     stopTimer();
     lockScreen(false);
     state.session = null;
+    state.tab = "today";
     render();
   };
 
@@ -924,23 +925,23 @@
             <p class="kicker">Day ${session.day.day} complete</p>
             <p>${escapeHtml(session.day.focus)}</p>
           </div>
-          <button class="icon-btn" data-end-session aria-label="Close">✕</button>
+          <button class="icon-btn" type="button" data-leave-session aria-label="Close">✕</button>
         </div>
         <div class="session-main">
           <div class="orb-wrap"><div class="orb"></div></div>
-          <h2 class="serif" style="font-size:32px">Nice work</h2>
+          <h2 class="serif" style="font-size:28px">Nice work</h2>
           <p class="muted">${session.holdSeconds}s of hold · ${session.day.exercises.length} exercises${session.extraRounds ? ` · +${session.extraRounds} round${session.extraRounds > 1 ? "s" : ""}` : ""} · streak ${state.core.streak}d</p>
           <div style="width:min(420px,100%)">
             <p class="kicker" style="margin-bottom:8px">How did that feel?</p>
             <div class="feel">
-              <button data-felt="easy" aria-pressed="${session.felt === "easy"}">Easy</button>
-              <button data-felt="ok" aria-pressed="${session.felt === "ok"}">Just right</button>
-              <button data-felt="hard" aria-pressed="${session.felt === "hard"}">Hard</button>
+              <button type="button" data-felt="easy" aria-pressed="${session.felt === "easy"}">Easy</button>
+              <button type="button" data-felt="ok" aria-pressed="${session.felt === "ok"}">Just right</button>
+              <button type="button" data-felt="hard" aria-pressed="${session.felt === "hard"}">Hard</button>
             </div>
           </div>
         </div>
         <div class="session-foot">
-          <button class="btn btn-primary" data-end-session>Back to today</button>
+          <button class="btn btn-primary" type="button" data-leave-session>Back to today</button>
         </div>
       </section>`
       : `
@@ -952,21 +953,20 @@
           </div>
           <div class="top-actions">
             <button class="icon-btn ${state.settings.soundOn ? "chip" : ""}" data-toggle="soundOn" aria-label="Sound">♫</button>
-            <button class="icon-btn" data-end-session aria-label="End session">✕</button>
+            <button class="icon-btn" type="button" data-leave-session aria-label="End session">✕</button>
           </div>
         </div>
         <div class="session-main">
-          <p class="muted">${preparing ? "Get settled" : `Exercise ${phase.exerciseIdx + 1} of ${session.day.exercises.length}`}</p>
           <p class="phase-label">${preparing ? "STARTING" : escapeHtml(phase.label)}</p>
+          <p class="session-cue">${preparing ? "Breathe. Soften the jaw." : sessionCue(phase.type)}</p>
           <div class="orb-wrap" data-orb title="${session.paused ? "Tap to resume" : "Tap to pause"}" role="button" aria-label="${session.paused ? "Resume" : "Pause"}">
             <div class="orb-halo"></div>
             <div class="orb-ring" style="--p:${Math.round((preparing ? (4 - session.preparing) / 3 : progress) * 100)}"></div>
             <div class="orb"></div>
           </div>
           <div class="count" data-count>${preparing ? session.preparing : Math.ceil(session.remaining)}</div>
-          <p class="muted">${preparing ? "Breathe. Soften the jaw." : sessionCue(phase.type)}</p>
-          ${session.paused && !preparing ? `<div class="pause-banner" style="width:min(420px,100%)">PAUSED — TAP ORB OR RESUME</div>` : ""}
-          <p class="faint">${session.paused ? "Paused · " + P.formatClock(left) + " left" : P.formatClock(left) + " left · phase " + (session.index + 1) + " of " + session.phases.length}</p>
+          ${session.paused && !preparing ? `<div class="pause-banner">PAUSED</div>` : ""}
+          <p class="faint" data-left>${session.paused ? "Paused · " : ""}${P.formatClock(left)} left · ${phase.exerciseIdx + 1}/${session.day.exercises.length}</p>
           <div class="ex-dots" aria-hidden="true">
             ${session.day.exercises.map((ex, idx) => {
               const done = idx < phase.exerciseIdx;
@@ -978,14 +978,15 @@
         <div class="session-foot">
           <div class="bar"><i style="width:${((session.index + (preparing ? 0 : progress)) / session.phases.length) * 100}%"></i></div>
           <div class="btn-row">
-            <button class="btn ${session.paused ? "btn-primary" : "btn-ghost"}" data-pause ${preparing ? "disabled" : ""}>${session.paused ? "▶ Resume" : "⏸ Pause"}</button>
-            <button class="btn btn-ghost" data-round ${preparing ? "disabled" : ""}>＋ Round</button>
+            <button class="btn ${session.paused ? "btn-primary" : "btn-ghost"}" type="button" data-pause ${preparing ? "disabled" : ""}>${session.paused ? "Resume" : "Pause"}</button>
+            <button class="btn btn-ghost" type="button" data-round ${preparing ? "disabled" : ""}>+ Round</button>
+            <button class="btn btn-ghost" type="button" data-skip ${preparing ? "disabled" : ""}>Skip</button>
           </div>
           <div class="quick-row">
-            <button data-nudge="-5" ${preparing ? "disabled" : ""}>−5s</button>
-            <button data-reset-phase ${preparing ? "disabled" : ""}>↻ Reset phase</button>
-            <button data-nudge="5" ${preparing ? "disabled" : ""}>+5s</button>
-            <button data-tune-toggle>${session.tuneOpen ? "Hide timers" : "Timers"}</button>
+            <button type="button" data-nudge="-5" ${preparing ? "disabled" : ""}>−5s</button>
+            <button type="button" data-reset-phase ${preparing ? "disabled" : ""}>Reset</button>
+            <button type="button" data-nudge="5" ${preparing ? "disabled" : ""}>+5s</button>
+            <button type="button" data-tune-toggle>${session.tuneOpen ? "Hide" : "Timers"}</button>
           </div>
           ${session.tuneOpen ? `
           <div class="tune-panel">
@@ -995,9 +996,9 @@
                 <output>${session.tuneHold}s</output>
               </div>
               <div class="stepper">
-                <button data-tune-nudge="hold" data-dir="-1" aria-label="Less hold">−</button>
+                <button type="button" data-tune-nudge="hold" data-dir="-1" aria-label="Less hold">−</button>
                 <input type="range" min="3" max="15" step="1" value="${session.tuneHold}" data-tune-slide="hold" aria-label="Hold seconds">
-                <button data-tune-nudge="hold" data-dir="1" aria-label="More hold">+</button>
+                <button type="button" data-tune-nudge="hold" data-dir="1" aria-label="More hold">+</button>
               </div>
             </div>
             <div class="slider-row">
@@ -1006,16 +1007,13 @@
                 <output>${session.tuneRest}s</output>
               </div>
               <div class="stepper">
-                <button data-tune-nudge="rest" data-dir="-1" aria-label="Less rest">−</button>
+                <button type="button" data-tune-nudge="rest" data-dir="-1" aria-label="Less rest">−</button>
                 <input type="range" min="2" max="10" step="1" value="${session.tuneRest}" data-tune-slide="rest" aria-label="Rest seconds">
-                <button data-tune-nudge="rest" data-dir="1" aria-label="More rest">+</button>
+                <button type="button" data-tune-nudge="rest" data-dir="1" aria-label="More rest">+</button>
               </div>
             </div>
-            <p class="faint">Sliders reset this phase and retime everything after it. Space = pause · R = reset · N = round.</p>
+            <p class="faint">Changes this phase and everything after it.</p>
           </div>` : ""}
-          <div class="btn-row">
-            <button class="btn btn-ghost" data-skip ${preparing ? "disabled" : ""}>Skip exercise →</button>
-          </div>
         </div>
       </section>`;
 
@@ -1028,7 +1026,7 @@
     const count = document.querySelector("[data-count]");
     const ring = document.querySelector(".orb-ring");
     const bar = document.querySelector(".session-foot .bar > i");
-    const leftLabel = document.querySelector(".session-main .faint");
+    const leftLabel = document.querySelector("[data-left]");
     const phase = session.phases[session.index];
     if (count) count.textContent = String(Math.ceil(session.remaining));
     if (ring) ring.style.setProperty("--p", String(Math.round((1 - session.remaining / phase.duration) * 100)));
@@ -1038,12 +1036,14 @@
     }
     if (leftLabel && !session.paused) {
       const left = remainingAfter(session, session.index) - (phase.duration - session.remaining);
-      leftLabel.textContent = `${P.formatClock(left)} left`;
+      leftLabel.textContent = `${P.formatClock(left)} left · ${phase.exerciseIdx + 1}/${session.day.exercises.length}`;
     }
   };
 
   const bindSession = (root) => {
-    root.querySelector("[data-end-session]")?.addEventListener("click", endSessionEarly);
+    root.querySelectorAll("[data-leave-session]").forEach((button) => {
+      button.addEventListener("click", leaveSession);
+    });
     root.querySelector("[data-pause]")?.addEventListener("click", togglePause);
     root.querySelector("[data-skip]")?.addEventListener("click", skipExercise);
     root.querySelector("[data-round]")?.addEventListener("click", addRoundLive);
